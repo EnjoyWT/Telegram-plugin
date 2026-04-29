@@ -99,6 +99,56 @@ describe('Telegram transport contract', () => {
     assert.deepEqual(sent, [['-100123', 'hello', { message_thread_id: 456 }]])
   })
 
+  it('sends typing payload as Telegram chat action', async () => {
+    const sent: unknown[] = []
+    const actions: unknown[] = []
+    const fakeBot = {
+      api: {
+        getMe: async () => ({ id: 1, is_bot: true, username: 'yolo_bot' }),
+        sendMessage: async (...args: unknown[]) => {
+          sent.push(args)
+          return { message_id: 9 }
+        },
+        sendChatAction: async (...args: unknown[]) => {
+          actions.push(args)
+          return true
+        },
+      },
+      on: () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }
+
+    const plugin = new TelegramTransportPlugin({
+      resolveAccountConfig: () => runtimeConfig,
+      botFactory: () => fakeBot,
+      autoStartPolling: false,
+    })
+
+    await plugin.connect('default')
+    await plugin.send({
+      deliveryId: 'typing-1',
+      conversationId: 'conv-1',
+      bindingId: 'binding-1',
+      transportId: 'telegram',
+      accountId: 'default',
+      audience: {
+        kind: 'thread',
+        externalChatId: '-100123',
+        externalThreadId: '456',
+      },
+      payload: { kind: 'typing' },
+      policy: {
+        preferThread: true,
+        splitLongText: true,
+        allowCardFallback: true,
+      },
+    })
+
+    assert.deepEqual(sent, [])
+    assert.deepEqual(actions, [['-100123', 'typing', { message_thread_id: 456 }]])
+  })
+
   it('lists only Telegram platform targets when a query is provided', () => {
     const plugin = new TelegramTransportPlugin()
     const targets = plugin.listTargets({

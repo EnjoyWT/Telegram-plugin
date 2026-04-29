@@ -24,6 +24,11 @@ type BotLike = {
   api: {
     getMe: () => Promise<TelegramUser>
     sendMessage: (chatId: string | number, text: string, options?: Record<string, unknown>) => Promise<unknown>
+    sendChatAction?: (
+      chatId: string | number,
+      action: 'typing',
+      options?: Record<string, unknown>
+    ) => Promise<unknown>
   }
   on: (filter: string, handler: (ctx: TelegramContextLike) => unknown) => unknown
   start: (options?: Record<string, unknown>) => Promise<void>
@@ -287,7 +292,7 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
       canReceiveCardCallbacks: false,
       maxTextLength: TELEGRAM_MAX_TEXT_LENGTH,
       supportedInboundMessageTypes: ['text'],
-      supportedOutboundPayloadTypes: ['text', 'markdown'],
+      supportedOutboundPayloadTypes: ['text', 'markdown', 'typing'],
     }
   }
 
@@ -364,7 +369,12 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
       if (this.autoStartPolling) {
         void bot
           .start({ drop_pending_updates: config.dropPendingUpdates })
-          .catch((error) => this.logger.error('Telegram polling failed', error))
+          .catch((error) => {
+            if (isAbortLikeError(error)) {
+              return
+            }
+            this.logger.error('Telegram polling failed', error)
+          })
       }
       this.logger.info('Telegram transport connected', {
         accountId,
@@ -418,6 +428,22 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
     }
 
     try {
+      if (command.payload.kind === 'typing') {
+        if (!connected.bot.api.sendChatAction) {
+          return {
+            status: 'failed',
+            retryable: false,
+            error: 'Telegram bot API does not support sendChatAction.',
+          }
+        }
+        const result = await connected.bot.api.sendChatAction(chatId, 'typing', options)
+        return {
+          status: 'sent',
+          externalMessageId: null,
+          raw: result,
+        }
+      }
+
       const result = await connected.bot.api.sendMessage(chatId, deliveryPayloadToText(command.payload), options)
       return {
         status: 'sent',
@@ -545,6 +571,14 @@ function extractTelegramMessageId(value: unknown): string | null {
   }
   const id = (value as { message_id?: unknown }).message_id
   return typeof id === 'number' || typeof id === 'string' ? String(id) : null
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  const record = error as { name?: unknown; message?: unknown }
+  return record.name === 'AbortError' || String(record.message ?? '').includes('Aborted')
 }
 
 function parseCsvSet(value: string | null): Set<string> | null {
