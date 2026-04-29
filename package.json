@@ -1,0 +1,30 @@
+{
+  "name": "@piagent/transport-telegram",
+  "version": "0.1.0",
+  "description": "PiAgent IM transport plugin for Telegram Bot API.",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "files": [
+    "dist",
+    ".piagent-plugin",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "tsx --test test/**/*.test.ts",
+    "check": "pnpm run build && pnpm test"
+  },
+  "dependencies": {
+    "grammy": "^1.42.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3"
+  }
+}

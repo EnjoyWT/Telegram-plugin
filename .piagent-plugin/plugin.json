@@ -1,0 +1,10 @@
+{
+  "id": "telegram",
+  "name": "Telegram",
+  "version": "0.1.0",
+  "description": "Telegram Bot API transport for PiAgent.",
+  "entry": "dist/index.mjs",
+  "capabilities": [
+    "im.transport"
+  ]
+}

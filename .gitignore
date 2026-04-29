@@ -141,3 +141,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Keep pnpm lockfiles trackable even when a global gitignore ignores them.
+!pnpm-lock.yaml
