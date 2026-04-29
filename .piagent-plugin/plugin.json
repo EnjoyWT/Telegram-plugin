@@ -1,10 +1,47 @@
 {
   "id": "telegram",
-  "name": "Telegram",
+  "kind": "transport",
+  "apiVersion": "1",
   "version": "0.1.0",
-  "description": "Telegram Bot API transport for PiAgent.",
-  "entry": "dist/index.mjs",
-  "capabilities": [
-    "im.transport"
-  ]
+  "entry": "./dist/index.mjs",
+  "displayName": "Telegram",
+  "description": "Telegram Bot API transport through grammY long polling.",
+  "permissions": {
+    "network": [
+      "api.telegram.org"
+    ]
+  },
+  "contributes": {
+    "transport": {},
+    "settings": {
+      "scope": "transport_account",
+      "supportsMultipleAccounts": false,
+      "fields": [
+        {
+          "key": "botToken",
+          "type": "secret",
+          "label": "Bot Token",
+          "required": true,
+          "placeholder": "123456:ABC..."
+        },
+        {
+          "key": "allowedChatIds",
+          "type": "text",
+          "label": "Allowed chat IDs"
+        },
+        {
+          "key": "groupAtOnly",
+          "type": "boolean",
+          "label": "Require @mention in groups",
+          "defaultValue": false
+        },
+        {
+          "key": "dropPendingUpdates",
+          "type": "boolean",
+          "label": "Drop pending updates on connect",
+          "defaultValue": true
+        }
+      ]
+    }
+  }
 }
