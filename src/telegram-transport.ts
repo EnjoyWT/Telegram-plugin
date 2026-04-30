@@ -4,6 +4,7 @@ import type {
   ImDeliveryCommand,
   ImDeliveryPayload,
   ImDeliveryResult,
+  ImAttachment,
   ImMention,
   ImPluginDiagnostics,
   ImSessionScope,
@@ -23,7 +24,34 @@ export const TELEGRAM_MAX_TEXT_LENGTH = 4096
 type BotLike = {
   api: {
     getMe: () => Promise<TelegramUser>
+    setMyCommands?: (commands: TelegramBotCommand[]) => Promise<unknown>
     sendMessage: (chatId: string | number, text: string, options?: Record<string, unknown>) => Promise<unknown>
+    sendPhoto?: (
+      chatId: string | number,
+      photo: string,
+      options?: Record<string, unknown>
+    ) => Promise<unknown>
+    sendDocument?: (
+      chatId: string | number,
+      document: string,
+      options?: Record<string, unknown>
+    ) => Promise<unknown>
+    sendVideo?: (
+      chatId: string | number,
+      video: string,
+      options?: Record<string, unknown>
+    ) => Promise<unknown>
+    sendAudio?: (
+      chatId: string | number,
+      audio: string,
+      options?: Record<string, unknown>
+    ) => Promise<unknown>
+    sendVoice?: (
+      chatId: string | number,
+      voice: string,
+      options?: Record<string, unknown>
+    ) => Promise<unknown>
+    answerCallbackQuery?: (callbackQueryId: string, options?: Record<string, unknown>) => Promise<unknown>
     sendChatAction?: (
       chatId: string | number,
       action: 'typing',
@@ -38,6 +66,7 @@ type BotLike = {
 type TelegramContextLike = {
   msg?: TelegramMessage
   message?: TelegramMessage
+  callbackQuery?: TelegramCallbackQuery
 }
 
 type TelegramUser = {
@@ -64,6 +93,28 @@ type TelegramMessageEntity = {
   user?: TelegramUser
 }
 
+type TelegramBotCommand = {
+  command: string
+  description: string
+}
+
+type TelegramFileRef = {
+  file_id: string
+  file_unique_id?: string
+  file_size?: number
+  file_name?: string
+  mime_type?: string
+  width?: number
+  height?: number
+}
+
+type TelegramCallbackQuery = {
+  id: string
+  data?: string
+  from: TelegramUser
+  message?: TelegramMessage
+}
+
 export type TelegramMessage = {
   message_id: number
   message_thread_id?: number
@@ -74,6 +125,13 @@ export type TelegramMessage = {
   date?: number
   entities?: TelegramMessageEntity[]
   caption_entities?: TelegramMessageEntity[]
+  reply_to_message?: Pick<TelegramMessage, 'message_id' | 'text' | 'caption'> | null
+  photo?: TelegramFileRef[]
+  document?: TelegramFileRef
+  audio?: TelegramFileRef
+  voice?: TelegramFileRef
+  video?: TelegramFileRef
+  sticker?: TelegramFileRef & { emoji?: string; set_name?: string }
   [key: string]: unknown
 }
 
@@ -101,6 +159,17 @@ type ConnectedTelegramAccount = {
   bot: BotLike
   botUser: TelegramUser
 }
+
+export const DEFAULT_TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
+  { command: 'help', description: 'Show available IM commands' },
+  { command: 'status', description: 'Show current session status' },
+  { command: 'diagnostics', description: 'Show IM diagnostics for this message' },
+  { command: 'queue', description: 'Show queued runs for this chat' },
+  { command: 'session', description: 'Show session routing details' },
+  { command: 'model', description: 'Show or switch the current session model' },
+  { command: 'stop', description: 'Stop the active run in this chat' },
+  { command: 'reset', description: 'Reset the current IM session' },
+]
 
 export const TELEGRAM_TRANSPORT_MANIFEST: PluginManifest = {
   id: TELEGRAM_TRANSPORT_ID,
@@ -200,17 +269,28 @@ export function buildTelegramInboundEvent(input: {
   }
 
   const chatKind = telegramChatKind(message.chat.type)
-  const text = message.text ?? message.caption ?? null
-  if (!text) {
+  const attachments = extractTelegramAttachments(message)
+  const rawText = message.text ?? message.caption ?? null
+  const text = normalizeInboundText(rawText, input.botUsername)
+  if (!text && attachments.length === 0) {
     return null
   }
-  if (chatKind !== 'dm' && input.groupAtOnly && !mentionsBot(text, message, input.botUsername)) {
+  if (
+    chatKind !== 'dm' &&
+    input.groupAtOnly &&
+    !mentionsBot(rawText ?? '', message, input.botUsername)
+  ) {
     return null
   }
 
   const messageId = String(message.message_id)
   const threadId = message.message_thread_id ? String(message.message_thread_id) : null
+  const replyToMessageId =
+    typeof message.reply_to_message?.message_id === 'number'
+      ? String(message.reply_to_message.message_id)
+      : null
   const senderId = message.from ? String(message.from.id) : String(message.chat.id)
+  const messageType = resolveTelegramMessageType(message, attachments)
 
   return {
     id: `${TELEGRAM_TRANSPORT_ID}:${input.accountId}:${chatId}:${messageId}`,
@@ -234,15 +314,85 @@ export function buildTelegramInboundEvent(input: {
       ? {
           id: threadId,
           rootMessageId: null,
-          replyToMessageId: null,
+          replyToMessageId,
         }
       : null,
     message: {
       id: messageId,
-      type: 'text',
+      type: messageType,
       text,
-      mentions: extractMentions(text, message),
+      mentions: extractMentions(text ?? '', message),
+      attachments,
       raw: message,
+    },
+    routingHint: {
+      scope: threadId
+        ? ('thread_per_member' satisfies ImSessionScope)
+        : chatKind === 'dm'
+          ? ('dm' satisfies ImSessionScope)
+          : ('group_per_member' satisfies ImSessionScope),
+    },
+  }
+}
+
+function buildTelegramCallbackInboundEvent(input: {
+  accountId: string
+  callbackQuery: TelegramCallbackQuery
+  allowedChatIds?: Set<string> | null
+  includeBotMessages?: boolean
+}): ImTransportInboundEvent | null {
+  const callbackQuery = input.callbackQuery
+  const message = callbackQuery.message
+  const data = readString(callbackQuery.data)
+  if (!message || !data) {
+    return null
+  }
+
+  const chatId = String(message.chat.id)
+  if (input.allowedChatIds && !input.allowedChatIds.has(chatId)) {
+    return null
+  }
+  if (!input.includeBotMessages && callbackQuery.from.is_bot) {
+    return null
+  }
+
+  const chatKind = telegramChatKind(message.chat.type)
+  const messageId = readString(callbackQuery.id) ?? String(message.message_id)
+  const threadId = message.message_thread_id ? String(message.message_thread_id) : null
+  const senderId = String(callbackQuery.from.id)
+
+  return {
+    id: `${TELEGRAM_TRANSPORT_ID}:${input.accountId}:${chatId}:callback:${messageId}`,
+    transportId: TELEGRAM_TRANSPORT_ID,
+    accountId: input.accountId,
+    receivedAt: new Date().toISOString(),
+    platform: {
+      raw: callbackQuery,
+    },
+    chat: {
+      id: chatId,
+      kind: chatKind,
+      title: message.chat.title ?? telegramUserDisplayName(message.chat) ?? null,
+    },
+    sender: {
+      id: senderId,
+      displayName: telegramUserDisplayName(callbackQuery.from),
+      isBot: callbackQuery.from.is_bot ?? false,
+    },
+    thread: threadId
+      ? {
+          id: threadId,
+          rootMessageId: null,
+          replyToMessageId: String(message.message_id),
+        }
+      : null,
+    message: {
+      id: messageId,
+      type: 'card_callback',
+      text: data,
+      mentions: [],
+      attachments: [],
+      raw: callbackQuery,
     },
     routingHint: {
       scope: threadId
@@ -281,18 +431,19 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
     return {
       canEditMessage: false,
       canStreamByEdit: false,
-      canRenderButtons: false,
+      canRenderButtons: true,
       canRenderRichCards: false,
       canReplyInThread: true,
-      canUploadImage: false,
-      canUploadFile: false,
+      canUploadImage: true,
+      canUploadFile: true,
       canCollectStructuredForm: false,
       canQuoteReply: true,
       canMentionUsers: true,
-      canReceiveCardCallbacks: false,
+      canReceiveCardCallbacks: true,
       maxTextLength: TELEGRAM_MAX_TEXT_LENGTH,
-      supportedInboundMessageTypes: ['text'],
-      supportedOutboundPayloadTypes: ['text', 'markdown', 'typing'],
+      maxButtonsPerMessage: 8,
+      supportedInboundMessageTypes: ['text', 'image', 'file', 'audio', 'video', 'card_callback'],
+      supportedOutboundPayloadTypes: ['text', 'markdown', 'typing', 'file', 'interaction'],
     }
   }
 
@@ -363,8 +514,27 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
           void this.emitInbound(event)
         }
       })
+      bot.on('callback_query:data', (ctx) => {
+        const callbackQuery = ctx.callbackQuery
+        if (!callbackQuery) {
+          return
+        }
+        const event = buildTelegramCallbackInboundEvent({
+          accountId,
+          callbackQuery,
+          allowedChatIds: config.allowedChatIds,
+          includeBotMessages: config.includeBotMessages,
+        })
+        if (event) {
+          void this.emitInbound(event)
+        }
+        void bot.api.answerCallbackQuery?.(callbackQuery.id).catch((error) => {
+          this.logger.warn('Unable to answer Telegram callback query', error)
+        })
+      })
 
       this.accounts.set(accountId, { config, bot, botUser })
+      await registerTelegramBotCommands(bot, this.logger)
 
       if (this.autoStartPolling) {
         void bot
@@ -426,6 +596,7 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
       const parsed = Number(threadId)
       options.message_thread_id = Number.isFinite(parsed) ? parsed : threadId
     }
+    applyTelegramReplyOptions(options, command.replyContext)
 
     try {
       if (command.payload.kind === 'typing') {
@@ -444,6 +615,17 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
         }
       }
 
+      const media = extractOutboundMedia(command.payload)
+      if (media) {
+        const result = await sendTelegramMedia(connected.bot, chatId, media, options)
+        return {
+          status: 'sent',
+          externalMessageId: extractTelegramMessageId(result),
+          raw: result,
+        }
+      }
+
+      applyTelegramInteractionOptions(options, command.payload)
       const result = await connected.bot.api.sendMessage(chatId, deliveryPayloadToText(command.payload), options)
       return {
         status: 'sent',
@@ -530,11 +712,22 @@ function telegramUserDisplayName(value: TelegramUser | TelegramChat | undefined)
 }
 
 function mentionsBot(text: string, message: TelegramMessage, botUsername?: string | null): boolean {
-  if (botUsername && text.includes(`@${botUsername}`)) {
-    return true
-  }
+  const expected = botUsername ? `@${botUsername.toLowerCase().replace(/^@/, '')}` : null
   const entities = [...(message.entities ?? []), ...(message.caption_entities ?? [])]
-  return entities.some((entity) => entity.type === 'text_mention' && entity.user?.is_bot)
+  return entities.some((entity) => {
+    if (entity.type === 'text_mention') {
+      return Boolean(entity.user?.is_bot)
+    }
+    const raw = text.slice(entity.offset, entity.offset + entity.length).toLowerCase()
+    if (entity.type === 'mention') {
+      return Boolean(expected && raw === expected)
+    }
+    if (entity.type === 'bot_command') {
+      const suffix = raw.split('@', 2)[1]
+      return Boolean(expected && suffix && `@${suffix}` === expected)
+    }
+    return false
+  })
 }
 
 function extractMentions(text: string, message: TelegramMessage): ImMention[] {
@@ -558,6 +751,9 @@ function deliveryPayloadToText(payload: ImDeliveryPayload): string {
   }
   if (payload.kind === 'markdown') {
     return payload.markdown || payload.fallbackText
+  }
+  if (payload.kind === 'interaction') {
+    return payload.prompt
   }
   if ('fallbackText' in payload && payload.fallbackText) {
     return payload.fallbackText
@@ -610,4 +806,251 @@ function readBoolean(value: unknown): boolean | null {
     }
   }
   return null
+}
+
+function normalizeInboundText(text: string | null, botUsername?: string | null): string | null {
+  const trimmed = readString(text)
+  if (!trimmed) {
+    return null
+  }
+  const username = readString(botUsername)?.replace(/^@/, '')
+  if (!username || !trimmed.startsWith('/')) {
+    return trimmed
+  }
+  const [commandToken = '', ...rest] = trimmed.split(/\s+/)
+  const suffix = `@${username.toLowerCase()}`
+  if (!commandToken.toLowerCase().endsWith(suffix)) {
+    return trimmed
+  }
+  const withoutSuffix = commandToken.slice(0, commandToken.length - suffix.length)
+  return [withoutSuffix, ...rest].join(' ').trim() || trimmed
+}
+
+function resolveTelegramMessageType(
+  message: TelegramMessage,
+  attachments: ImAttachment[]
+): ImTransportInboundEvent['message']['type'] {
+  if (message.photo?.length) {
+    return 'image'
+  }
+  if (message.video) {
+    return 'file'
+  }
+  if (message.audio || message.voice) {
+    return 'file'
+  }
+  if (message.document || message.sticker || attachments.length > 0) {
+    return 'file'
+  }
+  return 'text'
+}
+
+function extractTelegramAttachments(message: TelegramMessage): ImAttachment[] {
+  const attachments: ImAttachment[] = []
+  const largestPhoto = message.photo?.length
+    ? [...message.photo].sort((left, right) => scorePhoto(right) - scorePhoto(left))[0]
+    : null
+  if (largestPhoto) {
+    attachments.push(toAttachment(largestPhoto, {
+      mimeType: 'image/jpeg',
+      name: 'telegram-photo.jpg',
+      rawKind: 'photo',
+    }))
+  }
+  if (message.document) {
+    attachments.push(toAttachment(message.document, {
+      mimeType: message.document.mime_type || 'application/octet-stream',
+      name: message.document.file_name || 'telegram-document',
+      rawKind: 'document',
+    }))
+  }
+  if (message.video) {
+    attachments.push(toAttachment(message.video, {
+      mimeType: message.video.mime_type || 'video/mp4',
+      name: message.video.file_name || 'telegram-video.mp4',
+      rawKind: 'video',
+    }))
+  }
+  if (message.audio) {
+    attachments.push(toAttachment(message.audio, {
+      mimeType: message.audio.mime_type || 'audio/mpeg',
+      name: message.audio.file_name || 'telegram-audio',
+      rawKind: 'audio',
+    }))
+  }
+  if (message.voice) {
+    attachments.push(toAttachment(message.voice, {
+      mimeType: message.voice.mime_type || 'audio/ogg',
+      name: 'telegram-voice.ogg',
+      rawKind: 'voice',
+    }))
+  }
+  if (message.sticker) {
+    attachments.push(toAttachment(message.sticker, {
+      mimeType: message.sticker.mime_type || 'image/webp',
+      name: 'telegram-sticker.webp',
+      rawKind: 'sticker',
+    }))
+  }
+  return attachments
+}
+
+function scorePhoto(photo: TelegramFileRef): number {
+  return photo.file_size ?? (photo.width ?? 0) * (photo.height ?? 0)
+}
+
+function toAttachment(
+  file: TelegramFileRef,
+  input: { mimeType: string; name: string; rawKind: string }
+): ImAttachment {
+  return {
+    id: file.file_id,
+    mimeType: input.mimeType,
+    name: input.name,
+    sizeBytes: file.file_size ?? null,
+    raw: {
+      kind: input.rawKind,
+      fileId: file.file_id,
+      fileUniqueId: file.file_unique_id ?? null,
+      width: file.width ?? null,
+      height: file.height ?? null,
+    },
+  }
+}
+
+async function registerTelegramBotCommands(
+  bot: BotLike,
+  logger: PluginLogger
+): Promise<void> {
+  if (!bot.api.setMyCommands) {
+    return
+  }
+  try {
+    await bot.api.setMyCommands(DEFAULT_TELEGRAM_BOT_COMMANDS)
+  } catch (error) {
+    logger.warn('Unable to register Telegram bot commands', error)
+  }
+}
+
+function applyTelegramReplyOptions(
+  options: Record<string, unknown>,
+  replyContext: ImDeliveryCommand['replyContext'] | undefined
+): void {
+  const replyToMessageId = readString(replyContext?.replyToMessageId)
+  if (!replyToMessageId) {
+    return
+  }
+  const parsed = Number(replyToMessageId)
+  if (!Number.isFinite(parsed)) {
+    return
+  }
+  options.reply_parameters = {
+    message_id: parsed,
+    allow_sending_without_reply: true,
+  }
+}
+
+function applyTelegramInteractionOptions(
+  options: Record<string, unknown>,
+  payload: ImDeliveryPayload
+): void {
+  if (payload.kind !== 'interaction' || !payload.options?.length) {
+    return
+  }
+  const buttons = payload.options.slice(0, 8).map((option) => ({
+    text: option.label || option.id,
+    callback_data: toTelegramCallbackData(option.id),
+  }))
+  if (buttons.length === 0) {
+    return
+  }
+  options.reply_markup = {
+    inline_keyboard: chunk(buttons, 2),
+  }
+}
+
+function toTelegramCallbackData(value: string): string {
+  const normalized = readString(value) ?? 'option'
+  return Buffer.byteLength(normalized, 'utf8') <= 64
+    ? normalized
+    : Buffer.from(normalized, 'utf8').subarray(0, 64).toString('utf8')
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const rows: T[][] = []
+  for (let index = 0; index < items.length; index += size) {
+    rows.push(items.slice(index, index + size))
+  }
+  return rows
+}
+
+type OutboundMediaPayload = {
+  kind: 'photo' | 'document' | 'video' | 'audio' | 'voice'
+  source: string
+  caption?: string | null
+  fileName?: string | null
+}
+
+function extractOutboundMedia(payload: ImDeliveryPayload): OutboundMediaPayload | null {
+  if (payload.kind !== 'file') {
+    return null
+  }
+  const record = payload as ImDeliveryPayload & {
+    url?: string | null
+    filePath?: string | null
+    path?: string | null
+    mimeType?: string | null
+    name?: string | null
+    caption?: string | null
+    fallbackText?: string | null
+  }
+  const source = readString(record.url) ?? readString(record.filePath) ?? readString(record.path)
+  if (!source) {
+    return null
+  }
+  const mimeType = readString(record.mimeType) ?? ''
+  const name = readString(record.name)
+  const caption = readString(record.caption) ?? readString(record.fallbackText)
+  if (mimeType.startsWith('image/')) {
+    return { kind: 'photo', source, caption, fileName: name }
+  }
+  if (mimeType.startsWith('video/')) {
+    return { kind: 'video', source, caption, fileName: name }
+  }
+  if (mimeType === 'audio/ogg' || mimeType === 'audio/opus') {
+    return { kind: 'voice', source, caption, fileName: name }
+  }
+  if (mimeType.startsWith('audio/')) {
+    return { kind: 'audio', source, caption, fileName: name }
+  }
+  return { kind: 'document', source, caption, fileName: name }
+}
+
+async function sendTelegramMedia(
+  bot: BotLike,
+  chatId: string,
+  media: OutboundMediaPayload,
+  options: Record<string, unknown>
+): Promise<unknown> {
+  const mediaOptions = {
+    ...options,
+    ...(media.caption ? { caption: media.caption } : {}),
+    ...(media.fileName ? { filename: media.fileName } : {}),
+  }
+  if (media.kind === 'photo' && bot.api.sendPhoto) {
+    return bot.api.sendPhoto(chatId, media.source, mediaOptions)
+  }
+  if (media.kind === 'video' && bot.api.sendVideo) {
+    return bot.api.sendVideo(chatId, media.source, mediaOptions)
+  }
+  if (media.kind === 'audio' && bot.api.sendAudio) {
+    return bot.api.sendAudio(chatId, media.source, mediaOptions)
+  }
+  if (media.kind === 'voice' && bot.api.sendVoice) {
+    return bot.api.sendVoice(chatId, media.source, mediaOptions)
+  }
+  if (bot.api.sendDocument) {
+    return bot.api.sendDocument(chatId, media.source, mediaOptions)
+  }
+  return bot.api.sendMessage(chatId, media.caption || media.source, options)
 }
