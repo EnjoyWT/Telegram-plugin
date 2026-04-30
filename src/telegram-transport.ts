@@ -6,7 +6,7 @@ import type {
   ImDeliveryResult,
   ImAttachment,
   ImMention,
-  ImPluginDiagnostics,
+  ImPluginDoctor,
   ImSessionScope,
   ImTransportCapabilities,
   ImTransportInboundEvent,
@@ -163,10 +163,11 @@ type ConnectedTelegramAccount = {
 export const DEFAULT_TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: 'help', description: 'Show available IM commands' },
   { command: 'status', description: 'Show current session status' },
-  { command: 'diagnostics', description: 'Show IM diagnostics for this message' },
+  { command: 'doctor', description: 'Show IM doctor for this message' },
   { command: 'queue', description: 'Show queued runs for this chat' },
   { command: 'session', description: 'Show session routing details' },
   { command: 'model', description: 'Show or switch the current session model' },
+  { command: 'models', description: 'List available models and switch commands' },
   { command: 'stop', description: 'Stop the active run in this chat' },
   { command: 'reset', description: 'Reset the current IM session' },
 ]
@@ -447,7 +448,7 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
     }
   }
 
-  async getDiagnostics(accountId: string): Promise<ImPluginDiagnostics> {
+  async getDoctor(accountId: string): Promise<ImPluginDoctor> {
     const observedAt = new Date().toISOString()
     try {
       const config = this.getConfig(accountId)
@@ -479,7 +480,7 @@ export class TelegramTransportPlugin implements ImTransportPlugin {
           {
             id: 'telegram_get_me',
             status: 'fail',
-            message: error instanceof Error ? error.message : 'Telegram diagnostics failed.',
+            message: error instanceof Error ? error.message : 'Telegram doctor failed.',
             observedAt,
           },
         ],

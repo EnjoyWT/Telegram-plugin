@@ -139,6 +139,7 @@ describe('Telegram transport contract', () => {
 
     assert.ok(commands.some((command: any) => command.command === 'status'))
     assert.ok(commands.some((command: any) => command.command === 'model'))
+    assert.ok(commands.some((command: any) => command.command === 'models'))
     assert.ok(commands.some((command: any) => command.command === 'stop'))
     assert.equal(commands.some((command: any) => command.command === 'newsession'), false)
   })

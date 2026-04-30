@@ -258,7 +258,7 @@ export type ImDeliveryCommand = {
   bindingId: string
   transportId: string
   accountId: string
-  diagnosticTraceId?: string | null
+  doctorTraceId?: string | null
   audience: {
     kind: 'chat' | 'thread' | 'user'
     chatKind?: ImChatKind | null
@@ -311,14 +311,14 @@ export type ImDeliveryResult = {
   raw?: unknown
 }
 
-export type ImDiagnosticStatus = 'pass' | 'warn' | 'fail'
+export type ImDoctorStatus = 'pass' | 'warn' | 'fail'
 
-export type ImPluginDiagnostics = {
+export type ImPluginDoctor = {
   status: 'healthy' | 'degraded' | 'unavailable' | 'unknown'
   accountId: string
   checks: Array<{
     id: string
-    status: ImDiagnosticStatus
+    status: ImDoctorStatus
     message: string
     observedAt: string
     detail?: unknown
@@ -395,7 +395,7 @@ export type ImTransportPlugin = {
   getCapabilities(
     accountId: string
   ): Promise<ImTransportCapabilities> | ImTransportCapabilities
-  getDiagnostics(accountId: string): Promise<ImPluginDiagnostics> | ImPluginDiagnostics
+  getDoctor(accountId: string): Promise<ImPluginDoctor> | ImPluginDoctor
   connect(accountId: string): Promise<void> | void
   disconnect(accountId: string): Promise<void> | void
   send(command: ImDeliveryCommand): Promise<ImDeliveryResult> | ImDeliveryResult
